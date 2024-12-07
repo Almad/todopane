@@ -1,27 +1,34 @@
-from datetime import date
+import datetime
 import subprocess
 from typing import List, Dict, Any
 
 
-def get_events(config: dict, start_date: date, end_date: date) -> List[Dict[str, Any]]:
-    start_date_str = start_date.strftime("%A %-d %B %Y at %H:%M:%S")
-    end_date_str = end_date.strftime("%A %-d %B %Y at %H:%M:%S")
+EVENT_DELIMITER = "---EVENT_DELIMITER---"
+# APPLECAL_DATE_FORMAT = "%A %-d %B %Y at %H:%M:%S"
+APPLECAL_DATE_FORMAT = "%A %d %B %Y at %H:%M:%S"
 
-    calendar_ids = config["calendars"]["personal"]["names"]
-    calendar_ids += config["calendars"]["shared"]["names"]
+
+def get_calendar_stdout(
+    calendar_ids: str, start_date: datetime.date, end_date: datetime.date
+) -> str:
+    start_date_str = start_date.strftime(APPLECAL_DATE_FORMAT)
+    end_date_str = end_date.strftime(APPLECAL_DATE_FORMAT)
+
     calendar_subroutine = """
         tell calendar "{0}"
 		set foundEvents to (every event whose start date ≥ startDate and start date ≤ endDate)
 		repeat with anEvent in foundEvents
 			set eventProperties to properties of anEvent
-			set eventDetails to {{name:summary of eventProperties, startDate:start date of eventProperties, endDate:end date of eventProperties, location:location of eventProperties, calendar:"{0}"}}
+			set eventDetails to {{name:summary of eventProperties, startDate:start date of eventProperties, endDate:end date of eventProperties, location:location of eventProperties}}
 			copy eventDetails to end of eventList
+            copy "{1}" to end of eventList
 		end repeat
         end tell
     """
 
     calendars_subroutine = "\n".join(
-        calendar_subroutine.format(calendar_id) for calendar_id in calendar_ids
+        calendar_subroutine.format(calendar_id, EVENT_DELIMITER)
+        for calendar_id in calendar_ids
     )
 
     apple_script = f"""
@@ -35,83 +42,62 @@ def get_events(config: dict, start_date: date, end_date: date) -> List[Dict[str,
         return eventList
     end tell
     """
-    print(calendar_ids)
-    print(apple_script)
+    # Execute AppleScript and capture output
+    process = subprocess.Popen(
+        ["osascript", "-e", apple_script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
 
-    try:
-        # Execute AppleScript and capture output
-        process = subprocess.Popen(
-            ["osascript", "-e", apple_script],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+    output, error = process.communicate()
 
-        output, error = process.communicate()
+    if error:
+        raise Exception(f"AppleScript error: {error.decode()}")
 
-        if error:
-            raise Exception(f"AppleScript error: {error.decode()}")
-
-        # Parse the output and convert to Python objects
-        events = []
-        raw_events = output.decode().strip().split(", {")
-
-        for event_str in raw_events:
-            if event_str:
-                # Clean up the event string
-                event_str = event_str.replace("{", "").replace("}", "")
-                event_parts = event_str.split(", ")
-
-                event = {}
-                for part in event_parts:
-                    if ":" in part:
-                        key, value = part.split(":", 1)
-                        key = key.strip()
-                        value = value.strip()
-                        event[key] = value
-
-                # Convert date strings to datetime objects
-                if "start" in event:
-                    event["start"] = datetime.strptime(
-                        event["start"], "%Y-%m-%d %H:%M:%S +0000"
-                    )
-                if "end" in event:
-                    event["end"] = datetime.strptime(
-                        event["end"], "%Y-%m-%d %H:%M:%S +0000"
-                    )
-
-                events.append(event)
-
-        return events
-
-    except Exception as e:
-        print(f"Error: {str(e)}")
-        return []
+    output_string = output.decode().strip()
+    return output_string
 
 
-# Example usage
-if __name__ == "__main__":
-    from datetime import datetime, timedelta
-    import json
-    from datetime import datetime
+def parse_event(raw_event: str) -> Dict[str, Any]:
+    # Relies on attribute order from the apple script
+    string_left = raw_event
+    event = {}
+    if not string_left.startswith("name:"):
+        raise ValueError(f"Invalid event string: {raw_event}")
 
-    # Example dates
-    start = datetime.now()
-    end = start + timedelta(days=7)
+    string_left = string_left[5:]
+    delimiter = ", startDate:date "
+    event_data, string_left = string_left.split(delimiter, 1)
+    event["name"] = event_data.strip()
 
-    # Example calendar names
-    calendars = ["Work", "Personal"]
+    delimiter = ", endDate:date "
+    event_data, string_left = string_left.split(delimiter, 1)
+    event["startDate"] = datetime.datetime.strptime(
+        event_data.strip(), APPLECAL_DATE_FORMAT
+    )
 
-    # Get events
-    events = get_calendar_events(start, end, calendars)
+    delimiter = ", location:"
+    event_data, string_left = string_left.split(delimiter, 1)
+    event["endDate"] = datetime.datetime.strptime(
+        event_data.strip(), APPLECAL_DATE_FORMAT
+    )
 
-    # Custom JSON encoder to handle datetime objects
-    class DateTimeEncoder(json.JSONEncoder):
-        def default(self, obj):
-            if isinstance(obj, datetime):
-                return obj.isoformat()
-            return super().default(obj)
+    event["location"] = string_left.strip()
 
-    # Print events
-    for event in events:
-        print(json.dumps(event, indent=2, cls=DateTimeEncoder))
-        print("-" * 30)
+    return event
+
+
+def get_event_list_from_stdout(output_string: str) -> List[Dict[str, Any]]:
+    raw_events = output_string.split(f", {EVENT_DELIMITER}, ")
+    # example: name:Daria message, startDate:date Saturday 7 December 2024 at 20:15:00, endDate:date Saturday 7 December 2024 at 20:30:00, location:missing value, calendar:Almad Family Shared
+    return [parse_event(raw_event) for raw_event in raw_events]
+
+
+def get_events(
+    config: dict, start_date: datetime.date, end_date: datetime.date
+) -> List[Dict[str, Any]]:
+    calendar_ids = config["calendars"]["personal"]["names"]
+    calendar_ids += config["calendars"]["shared"]["names"]
+
+    output_string = get_calendar_stdout(calendar_ids, start_date, end_date)
+    return get_event_list_from_stdout(output_string)

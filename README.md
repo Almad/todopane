@@ -1,5 +1,8 @@
 # TODO Pane
 
+**This is not implemented yet**
+
+
 A personal project for learning LLMs a bit better. A way to try out if there is a way to utilize local LLMs for task prioritization and potential completion. 
 
 The goal is to have a single pane of glass for all the things that need to be done.

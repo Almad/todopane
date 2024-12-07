@@ -5,6 +5,8 @@ Main entry point for the application.
 import sys
 import tomli
 
+from planner import get_daily_plan
+
 
 def load_config(filename: str) -> dict:
     try:
@@ -16,7 +18,10 @@ def load_config(filename: str) -> dict:
 
 
 def main():
-    pass
+    config = load_config("config.toml")
+
+    plan = get_daily_plan(config)
+    print(plan)
 
 
 if __name__ == "__main__":
